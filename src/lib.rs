@@ -2,23 +2,21 @@ pub mod util;
 
 use crate::util::item_type;
 use crate::util::ItemType;
-use std::io::Cursor;
+
 use std::{
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
     str::FromStr,
-    thread::{self, JoinHandle},
 };
-use syn::Item;
 
 use color_eyre::{
     eyre::{self, Context},
     Result,
 };
-use crossbeam::channel::{select, Receiver, Sender};
-use crossbeam::thread::Scope;
-use ignore::{DirEntry, ParallelVisitor, ParallelVisitorBuilder, Walk, WalkBuilder, WalkParallel};
+use crossbeam::channel::{select, Sender};
+
+use ignore::{DirEntry, ParallelVisitor, ParallelVisitorBuilder, Walk, WalkBuilder};
 use regex::Regex;
 use syn::__private::ToTokens;
 use syntect::{
@@ -106,7 +104,7 @@ pub fn rgrok_dir(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Result<()> {
                         )
                     })?;
                     let file = parse_file(dir_entry)?;
-                    grep_items(&mut args.output, &file, &args.regex, syntax, &ps, &ts);
+                    grep_items(&mut args.output, &file, &args.regex, syntax, ps, ts);
                 } else {
                     // ?
                 }
@@ -179,7 +177,7 @@ pub fn rgrok_dir_parallel(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Resu
     let (tx, rx) = crossbeam::channel::unbounded::<(ParsedFile, SyntaxReference)>();
     let (quit, done) = crossbeam::channel::unbounded::<()>();
     let mut vbuilder = VisitorBuilder {
-        ps: &ps,
+        ps,
         re: &args.regex,
         tx,
         quit,
@@ -199,7 +197,7 @@ pub fn rgrok_dir_parallel(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Resu
             recv(rx) -> msg => {
                 match msg {
                     Ok((file, syntax)) => {
-                        grep_items(&mut args.output, &file, &args.regex, &syntax, &ps, &ts)
+                        grep_items(&mut args.output, &file, &args.regex, &syntax, ps, ts)
                     },
                     _ => panic!()
                 }
@@ -235,18 +233,18 @@ pub fn grep_items(
         syn_file
             .items
             .iter()
-            .map(|item| (item_type(&item), item.to_token_stream().to_string()))
+            .map(|item| (item_type(item), item.to_token_stream().to_string()))
             .collect::<Vec<(ItemType, String)>>()
             .into_par_iter()
             .for_each(|(t, tokens)| {
                 let string = Vec::new();
                 let mut writer = std::io::BufWriter::new(string);
                 if re.is_match(&tokens) {
-                    let output_str = rustfmt(tokens.to_string()).unwrap();
+                    let output_str = rustfmt(tokens).unwrap();
                     let mut h =
                         syntect::easy::HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
                     // Print header information for file.
-                    print_header_info(&mut writer, &file, t);
+                    print_header_info(&mut writer, file, t);
                     // Print highlighted strings.
                     for line in LinesWithEndings::from(&output_str) {
                         let mut ranges: Vec<(Style, &str)> = h.highlight(line, ps);

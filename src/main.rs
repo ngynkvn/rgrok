@@ -1,10 +1,7 @@
 use clap::Clap;
 use rgrok::{rgrok_dir, rgrok_dir_parallel, Args};
 
-use std::path::PathBuf;
-use std::str::FromStr;
-
-use color_eyre::{eyre, Report, Result};
+use color_eyre::Result;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 

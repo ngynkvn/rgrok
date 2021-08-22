@@ -2,12 +2,8 @@ use ignore::DirEntry;
 use std::fmt::Display;
 use syn::Item;
 
-use color_eyre::{
-    eyre::{self, Context},
-    Result,
-};
+use color_eyre::Result;
 
-use crate::Output;
 use std::io::Write;
 
 pub struct ParsedFile {
