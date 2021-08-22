@@ -1,3 +1,4 @@
+use crate::Compositor;
 use ignore::DirEntry;
 use std::fmt::Display;
 use syn::Item;

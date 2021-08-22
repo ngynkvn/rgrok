@@ -2,6 +2,10 @@ pub mod util;
 
 use crate::util::item_type;
 use crate::util::ItemType;
+use core::any::Any;
+use crossterm::terminal::EnterAlternateScreen;
+use std::fmt::Formatter;
+use std::io::BufWriter;
 use syn::spanned::Spanned;
 use syn::Item;
 
@@ -60,6 +64,9 @@ pub enum Output {
     Stdout,
     Null,
 }
+impl Compositor for Output {
+    type Context = ((usize, usize), ItemType);
+}
 impl std::io::Write for Output {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
@@ -94,7 +101,76 @@ pub fn rustfmt(string: String) -> Result<String> {
     Ok(String::from_utf8_lossy(&output).into())
 }
 
-pub fn rgrok_dir(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Result<()> {
+use crossterm::cursor;
+use crossterm::terminal;
+use crossterm::ExecutableCommand;
+
+struct TerminalPrinter {
+    size: (u16, u16),
+    output: Output,
+    line: String,
+}
+
+impl TerminalPrinter {
+    pub fn new(output: Output) -> Result<Self, std::io::Error> {
+        let (x, y) = terminal::size()?;
+        Ok(Self {
+            size: (x, y),
+            output,
+            line: std::iter::repeat('-').take(x as _).collect(),
+        })
+    }
+}
+
+impl Write for TerminalPrinter {
+    /// Composites a simple line frame around the buffer.
+    fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, std::io::Error> {
+        match &self.output {
+            Output::Stdout => {
+                let mut stdout = std::io::stdout();
+                let result = stdout.write(buf);
+                result
+            }
+            Output::Null => Ok(buf.len()),
+        }
+    }
+    fn flush(&mut self) -> std::result::Result<(), std::io::Error> {
+        self.output.flush()
+    }
+}
+
+impl Compositor for TerminalPrinter {
+    type Context = ((usize, usize), ItemType);
+    fn write_with(
+        &mut self,
+        args: std::fmt::Arguments,
+        ((start, end), item_type): Self::Context,
+    ) -> std::result::Result<(), std::io::Error> {
+        writeln!(self.output, "{}", self.line)?;
+        writeln!(self.output, "{:?}, ({}, {})", item_type, start, end)?;
+        writeln!(self.output, "{}", self.line)?;
+        let result = self.write_fmt(args);
+        writeln!(self.output, "{}", self.line)?;
+        writeln!(self.output)?;
+
+        result
+    }
+}
+
+/// A compositor is just a fancy writer that can understand some more contextual information.
+pub trait Compositor: Write {
+    type Context;
+    fn write_with(
+        &mut self,
+        args: std::fmt::Arguments,
+        _: Self::Context,
+    ) -> std::result::Result<(), std::io::Error> {
+        self.write_fmt(args)
+    }
+}
+
+pub fn rgrok_dir(args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Result<()> {
+    let mut printer = TerminalPrinter::new(args.output)?;
     for file in Walk::new(args.path) {
         match file {
             Ok(dir_entry) => {
@@ -106,7 +182,7 @@ pub fn rgrok_dir(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Result<()> {
                         )
                     })?;
                     let file = parse_file(dir_entry)?;
-                    grep_items(&mut args.output, &file, &args.regex, syntax, ps, ts);
+                    grep_items(&mut printer, &file, &args.regex, syntax, ps, ts);
                 } else {
                     // ?
                 }
@@ -217,14 +293,20 @@ pub fn is_rust_file(dir_entry: &DirEntry) -> bool {
 
 use lazy_static::lazy_static;
 
+struct GrepResult {
+    line_range: (usize, usize),
+    item_type: ItemType,
+    writer: BufWriter<Vec<u8>>,
+}
+
 lazy_static! {
     static ref LINE_REGEX: regex::Regex = regex::RegexBuilder::new("(.*\r?\n)")
         .multi_line(true)
         .build()
         .unwrap();
 }
-pub fn grep_items(
-    output: &mut Output,
+pub fn grep_items<W: Compositor<Context = ((usize, usize), ItemType)>>(
+    output: &mut W,
     file: &ParsedFile,
     re: &Regex,
     syntax: &SyntaxReference,
@@ -264,31 +346,42 @@ pub fn grep_items(
                 if re.is_match(item) {
                     let mut h =
                         syntect::easy::HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
-                    // Print header information for file.
-                    print_header_info(&mut writer, file, t);
-                    // Print highlighted strings.
+                    // Write highlighted strings to buffer.
                     for line in LinesWithEndings::from(item) {
                         let mut ranges: Vec<(Style, &str)> = h.highlight(line, ps);
                         highlight_matches_in_line(&mut ranges, re.find_iter(line));
-                        // morph_ranges(&mut ranges, output_str);
                         let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
                         write!(writer, "{}", escaped).unwrap();
                     }
                     writeln!(writer, "\x1b[0m").unwrap();
+                    let grep_result = GrepResult {
+                        item_type: t,
+                        line_range: (start, end),
+                        writer,
+                    };
+                    tx.send(grep_result).unwrap();
                 }
-                tx.send(writer).unwrap();
             });
         rx
     };
     loop {
         match rx.recv() {
-            Ok(writer) => {
-                write!(
-                    output,
-                    "{}",
-                    String::from_utf8(writer.into_inner().unwrap()).unwrap()
-                )
-                .unwrap();
+            Ok(GrepResult {
+                writer,
+                line_range,
+                item_type,
+            }) => {
+                let string = String::from_utf8(writer.into_inner().unwrap()).unwrap();
+                output
+                    .write_with(format_args!("{}", string), (line_range, item_type))
+                    .unwrap();
+                // write!(
+                //     output,
+                //     "{}",
+                //     String::from_utf8(writer.into_inner().unwrap()).unwrap()
+                // )
+                // .unwrap();
+                output.flush().unwrap();
             }
             Err(_) => break,
         }
