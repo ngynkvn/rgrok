@@ -1,9 +1,9 @@
 pub mod util;
 
-use syn::spanned::Spanned;
-use syn::Item;
 use crate::util::item_type;
 use crate::util::ItemType;
+use syn::spanned::Spanned;
+use syn::Item;
 
 use std::{
     io::Write,
@@ -215,11 +215,13 @@ pub fn is_rust_file(dir_entry: &DirEntry) -> bool {
         && dir_entry.path().extension().unwrap_or_default() == "rs"
 }
 
-
 use lazy_static::lazy_static;
 
 lazy_static! {
-    static ref LINE_REGEX: regex::Regex = regex::Regex::new("(.*)").unwrap();
+    static ref LINE_REGEX: regex::Regex = regex::RegexBuilder::new("(.*\r?\n)")
+        .multi_line(true)
+        .build()
+        .unwrap();
 }
 pub fn grep_items(
     output: &mut Output,
@@ -249,7 +251,7 @@ pub fn grep_items(
                 let span = item.span();
                 let (start, end) = (span.start().line, span.end().line);
                 let item_type = item_type(&item);
-                (item_type, (start,end))
+                (item_type, (start, end))
             })
             .collect::<Vec<(ItemType, (usize, usize))>>()
             .into_par_iter()
@@ -285,7 +287,8 @@ pub fn grep_items(
                     output,
                     "{}",
                     String::from_utf8(writer.into_inner().unwrap()).unwrap()
-                ).unwrap();
+                )
+                .unwrap();
             }
             Err(_) => break,
         }
