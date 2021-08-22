@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+
 use rgrok::{rgrok_dir, rgrok_dir_parallel, Args, Output};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
@@ -31,5 +32,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, criterion_benchmark);
+criterion_group!(
+    name = benches;
+    config = Criterion::default();
+    targets = criterion_benchmark
+);
 criterion_main!(benches);

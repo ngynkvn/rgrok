@@ -1,4 +1,6 @@
 use ignore::DirEntry;
+use std::fmt::Display;
+use syn::Item;
 
 use color_eyre::{
     eyre::{self, Context},
@@ -13,27 +15,57 @@ pub struct ParsedFile {
     pub dir_entry: DirEntry,
 }
 
-pub fn print_header_info(output: &mut Output, file: &ParsedFile, item: &syn::Item) {
-    let item_type = match item {
-        syn::Item::Const(_) => "const",
-        syn::Item::Enum(_) => "enum",
-        syn::Item::ExternCrate(_) => "extern",
-        syn::Item::Fn(_) => "function",
-        syn::Item::ForeignMod(_) => "foreign",
-        syn::Item::Impl(_) => "impl",
-        syn::Item::Macro(_) => "macro",
-        syn::Item::Macro2(_) => "macro2",
-        syn::Item::Mod(_) => "mod",
-        syn::Item::Static(_) => "static",
-        syn::Item::Struct(_) => "struct",
-        syn::Item::Trait(_) => "trait",
-        syn::Item::TraitAlias(_) => "trait alias",
-        syn::Item::Type(_) => "type",
-        syn::Item::Union(_) => "union",
-        syn::Item::Use(_) => "use",
-        syn::Item::Verbatim(_) => "verbatim",
-        syn::Item::__TestExhaustive(_) => unreachable!(),
-    };
+#[derive(Debug)]
+pub enum ItemType {
+    Fn,
+    Enum,
+    Const,
+    ExternCrate,
+    ForeignMod,
+    Impl,
+    Macro,
+    Macro2,
+    Mod,
+    Static,
+    Struct,
+    Trait,
+    TraitAlias,
+    Type,
+    Union,
+    Use,
+    Verbatim,
+}
+
+pub fn item_type(item: &Item) -> ItemType {
+    match item {
+        Item::Const(_) => ItemType::Const,
+        Item::Enum(_) => ItemType::Enum,
+        Item::ExternCrate(_) => ItemType::ExternCrate,
+        Item::Fn(_) => ItemType::Fn,
+        Item::ForeignMod(_) => ItemType::ForeignMod,
+        Item::Impl(_) => ItemType::Impl,
+        Item::Macro(_) => ItemType::Macro,
+        Item::Macro2(_) => ItemType::Macro2,
+        Item::Mod(_) => ItemType::Mod,
+        Item::Static(_) => ItemType::Static,
+        Item::Struct(_) => ItemType::Struct,
+        Item::Trait(_) => ItemType::Trait,
+        Item::TraitAlias(_) => ItemType::TraitAlias,
+        Item::Type(_) => ItemType::Type,
+        Item::Union(_) => ItemType::Union,
+        Item::Use(_) => ItemType::Use,
+        Item::Verbatim(_) => ItemType::Verbatim,
+        Item::__TestExhaustive(_) => unreachable!(),
+    }
+}
+
+impl Display for ItemType {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        write!(fmt, "{:?}", self)
+    }
+}
+
+pub fn print_header_info<W: Write>(output: &mut W, file: &ParsedFile, item_type: ItemType) {
     writeln!(
         output,
         "[{}] {}",

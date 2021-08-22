@@ -19,7 +19,11 @@
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": [
+                "--path",
+                "../",
+                "fn"
+            ],
             "cwd": "${workspaceFolder}"
         },
         {

@@ -13,6 +13,7 @@ clap = "3.0.0-beta.4"
 color-eyre = "0.5.11"
 crossbeam = "0.8.1"
 ignore = "0.4.18"
+rayon = "1.5.1"
 regex = "1.5.4"
 syn = { version = "1.0.75", features = ["parsing", "full"] }
 syntect = "4.6.0"
@@ -26,3 +27,6 @@ criterion = "0.3.5"
 [[bench]]
 name = "rgrok"
 harness = false
+
+[profile.release]
+debug = true

@@ -1,5 +1,8 @@
 pub mod util;
 
+use crate::util::item_type;
+use crate::util::ItemType;
+use std::io::Cursor;
 use std::{
     io::Write,
     path::PathBuf,
@@ -7,6 +10,7 @@ use std::{
     str::FromStr,
     thread::{self, JoinHandle},
 };
+use syn::Item;
 
 use color_eyre::{
     eyre::{self, Context},
@@ -103,6 +107,8 @@ pub fn rgrok_dir(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Result<()> {
                     })?;
                     let file = parse_file(dir_entry)?;
                     grep_items(&mut args.output, &file, &args.regex, syntax, &ps, &ts);
+                } else {
+                    // ?
                 }
             }
             _ => {}
@@ -217,25 +223,53 @@ pub fn grep_items(
     ps: &SyntaxSet,
     ts: &ThemeSet,
 ) {
-    let syn_file = syn::parse_file(&file.contents)
-        .wrap_err_with(|| eyre::eyre!("Unable to parse \"{}\"", file.dir_entry.path().display()))
-        .unwrap();
-    for item in syn_file.items.iter() {
-        let item_str = item.to_token_stream().to_string();
-        let output_str = rustfmt(item_str).unwrap();
-        if re.is_match(&output_str) {
-            // Print header information for file.
-            print_header_info(output, &file, item);
-            // Print highlighted strings.
-            let mut h = syntect::easy::HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
+    let syn_file: syn::File;
+    match syn::parse_file(&file.contents) {
+        Ok(f) => syn_file = f,
+        Err(_) => return,
+    };
 
-            for line in LinesWithEndings::from(&output_str) {
-                let mut ranges: Vec<(Style, &str)> = h.highlight(line, ps);
-                highlight_matches_in_line(&mut ranges, re.find_iter(line));
-                let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
-                write!(output, "{}", escaped).unwrap();
+    let rx = {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        use rayon::prelude::*;
+        syn_file
+            .items
+            .iter()
+            .map(|item| (item_type(&item), item.to_token_stream().to_string()))
+            .collect::<Vec<(ItemType, String)>>()
+            .into_par_iter()
+            .for_each(|(t, tokens)| {
+                let string = Vec::new();
+                let mut writer = std::io::BufWriter::new(string);
+                if re.is_match(&tokens) {
+                    let output_str = rustfmt(tokens.to_string()).unwrap();
+                    let mut h =
+                        syntect::easy::HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
+                    // Print header information for file.
+                    print_header_info(&mut writer, &file, t);
+                    // Print highlighted strings.
+                    for line in LinesWithEndings::from(&output_str) {
+                        let mut ranges: Vec<(Style, &str)> = h.highlight(line, ps);
+                        highlight_matches_in_line(&mut ranges, re.find_iter(line));
+                        let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+                        write!(writer, "{}", escaped).unwrap();
+                    }
+                    writeln!(writer, "\x1b[0m").unwrap();
+                }
+                tx.send(writer).unwrap();
+            });
+        rx
+    };
+    loop {
+        match rx.recv() {
+            Ok(writer) => {
+                write!(
+                    output,
+                    "{}",
+                    String::from_utf8(writer.into_inner().unwrap()).unwrap()
+                );
             }
-            writeln!(output, "\x1b[0m").unwrap();
+            Err(_) => break,
         }
     }
 }
