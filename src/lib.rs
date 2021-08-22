@@ -1,5 +1,7 @@
 pub mod util;
 
+use syn::spanned::Spanned;
+use syn::Item;
 use crate::util::item_type;
 use crate::util::ItemType;
 
@@ -213,6 +215,12 @@ pub fn is_rust_file(dir_entry: &DirEntry) -> bool {
         && dir_entry.path().extension().unwrap_or_default() == "rs"
 }
 
+
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref LINE_REGEX: regex::Regex = regex::Regex::new("(.*)").unwrap();
+}
 pub fn grep_items(
     output: &mut Output,
     file: &ParsedFile,
@@ -226,29 +234,41 @@ pub fn grep_items(
         Ok(f) => syn_file = f,
         Err(_) => return,
     };
-
+    let mut byte_spans = vec![0usize];
+    byte_spans.extend(LINE_REGEX.find_iter(&file.contents).scan(0, |acc, l| {
+        *acc += l.as_str().len();
+        Some(*acc)
+    }));
     let rx = {
         let (tx, rx) = crossbeam::channel::unbounded();
         use rayon::prelude::*;
         syn_file
             .items
             .iter()
-            .map(|item| (item_type(item), item.to_token_stream().to_string()))
-            .collect::<Vec<(ItemType, String)>>()
+            .map(|item| {
+                let span = item.span();
+                let (start, end) = (span.start().line, span.end().line);
+                let item_type = item_type(&item);
+                (item_type, (start,end))
+            })
+            .collect::<Vec<(ItemType, (usize, usize))>>()
             .into_par_iter()
-            .for_each(|(t, tokens)| {
+            .for_each(|(t, (start, end))| {
                 let string = Vec::new();
                 let mut writer = std::io::BufWriter::new(string);
-                if re.is_match(&tokens) {
-                    let output_str = rustfmt(tokens).unwrap();
+                let num_skip: usize = byte_spans[start];
+                let end: usize = byte_spans[end];
+                let item = &file.contents[num_skip..end];
+                if re.is_match(item) {
                     let mut h =
                         syntect::easy::HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
                     // Print header information for file.
                     print_header_info(&mut writer, file, t);
                     // Print highlighted strings.
-                    for line in LinesWithEndings::from(&output_str) {
+                    for line in LinesWithEndings::from(item) {
                         let mut ranges: Vec<(Style, &str)> = h.highlight(line, ps);
                         highlight_matches_in_line(&mut ranges, re.find_iter(line));
+                        // morph_ranges(&mut ranges, output_str);
                         let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
                         write!(writer, "{}", escaped).unwrap();
                     }
@@ -265,7 +285,7 @@ pub fn grep_items(
                     output,
                     "{}",
                     String::from_utf8(writer.into_inner().unwrap()).unwrap()
-                );
+                ).unwrap();
             }
             Err(_) => break,
         }
