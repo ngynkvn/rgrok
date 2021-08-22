@@ -20,6 +20,7 @@ syntect = "4.6.0"
 
 [profile.dev]
 opt-level = 3
+incremental = true
 
 [dev-dependencies]
 criterion = "0.3.5"
@@ -30,3 +31,4 @@ harness = false
 
 [profile.release]
 debug = true
+incremental = true
