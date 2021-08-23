@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use rgrok::{rgrok_dir, rgrok_dir_parallel, Args, Output};
+use rgrok::{parallel::rgrok_dir_parallel, rgrok_dir, Args, Output};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
 fn criterion_benchmark(c: &mut Criterion) {

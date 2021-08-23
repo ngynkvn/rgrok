@@ -1,3 +1,4 @@
+pub mod parallel;
 pub mod util;
 
 use crate::util::item_type;
@@ -14,12 +15,11 @@ use std::{
 };
 
 use color_eyre::{
-    eyre::{self, Context},
+    eyre::{self},
     Result,
 };
-use crossbeam::channel::{select, Sender};
 
-use ignore::{DirEntry, ParallelVisitor, ParallelVisitorBuilder, Walk, WalkBuilder};
+use ignore::{DirEntry, Walk};
 use regex::Regex;
 
 use syntect::{
@@ -91,7 +91,7 @@ pub fn rustfmt(string: String) -> Result<String> {
         let stdin = process
             .stdin
             .as_mut()
-            .ok_or(eyre::eyre!("Unable to obtain handle to stdin process."))?;
+            .ok_or_else(|| eyre::eyre!("Unable to obtain handle to stdin process."))?;
         stdin.write_all(string.as_bytes())?;
     }
     let output = process.wait_with_output()?.stdout;
@@ -167,91 +167,19 @@ pub fn rgrok_dir(args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Result<()> {
     let mut printer = TerminalPrinter::new(args.output)?;
     for file in Walk::new(args.path) {
         match file {
-            Ok(dir_entry) => {
-                if is_rust_file(&dir_entry) {
-                    let syntax = ps.find_syntax_for_file(dir_entry.path())?.ok_or_else(|| {
-                        eyre::eyre!(
-                            "Syntax highlight support was not found for the following file: {:?}",
-                            dir_entry.path()
-                        )
-                    })?;
-                    let file = parse_file(dir_entry)?;
-                    grep_items(&mut printer, &file, &args.regex, syntax, ps, ts);
-                } else {
-                    // ?
-                }
+            Ok(dir_entry) if is_rust_file(&dir_entry) => {
+                let syntax = ps.find_syntax_for_file(dir_entry.path())?.ok_or_else(|| {
+                    eyre::eyre!(
+                        "Syntax highlight support was not found for the following file: {:?}",
+                        dir_entry.path()
+                    )
+                })?;
+                let file = parse_file(dir_entry)?;
+                grep_items(&mut printer, &file, &args.regex, syntax, ps, ts);
             }
             _ => {}
         }
     }
-    Ok(())
-}
-
-pub fn rgrok_dir_parallel(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Result<()> {
-    let walker = WalkBuilder::new(args.path).threads(0).build_parallel();
-
-    struct Visitor<'a> {
-        tx: Sender<(ParsedFile, SyntaxReference)>,
-        ps: &'a SyntaxSet,
-        re: &'a regex::Regex,
-    }
-    impl<'a> ParallelVisitor for Visitor<'a> {
-        fn visit(&mut self, entry: Result<DirEntry, ignore::Error>) -> ignore::WalkState {
-            use ignore::WalkState::*;
-            match entry {
-                Ok(dir_entry) => {
-                    if is_rust_file(&dir_entry) {
-                        let syntax = self
-                            .ps
-                            .find_syntax_for_file(dir_entry.path())
-                            .wrap_err(eyre::eyre!(
-                            "Syntax highlight support was not found for the following file: {:?}",
-                            dir_entry.path()
-                            ))
-                            .unwrap()
-                            .unwrap();
-                        let file = parse_file(dir_entry).unwrap();
-                        if self.re.is_match(&file.contents) {
-                            self.tx.send((file, syntax.clone())).unwrap();
-                        }
-                    }
-                    Continue
-                }
-                Err(_) => Continue,
-            }
-        }
-    }
-    struct VisitorBuilder<'a> {
-        ps: &'a SyntaxSet,
-        re: &'a regex::Regex,
-        tx: Sender<(ParsedFile, SyntaxReference)>,
-    }
-    impl<'s> ParallelVisitorBuilder<'s> for VisitorBuilder<'s> {
-        fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
-            Box::new(Visitor {
-                tx: self.tx.clone(),
-                ps: self.ps,
-                re: self.re,
-            })
-        }
-    }
-
-    let (tx, rx) = crossbeam::channel::unbounded::<(ParsedFile, SyntaxReference)>();
-
-    {
-        let mut vbuilder = VisitorBuilder {
-            ps,
-            re: &args.regex,
-            tx,
-        };
-        walker.visit(&mut vbuilder);
-        // Drop that vbuilder
-    }
-
-    while let Ok((file, syntax)) = rx.recv() {
-        grep_items(&mut args.output, &file, &args.regex, &syntax, ps, ts)
-    }
-
     Ok(())
 }
 

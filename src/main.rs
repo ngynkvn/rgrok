@@ -1,5 +1,5 @@
 use clap::Clap;
-use rgrok::{rgrok_dir, rgrok_dir_parallel, Args};
+use rgrok::{parallel::rgrok_dir_parallel, rgrok_dir, Args};
 
 use color_eyre::Result;
 use syntect::highlighting::ThemeSet;
