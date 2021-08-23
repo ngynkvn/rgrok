@@ -2,12 +2,9 @@ pub mod util;
 
 use crate::util::item_type;
 use crate::util::ItemType;
-use core::any::Any;
-use crossterm::terminal::EnterAlternateScreen;
-use std::fmt::Formatter;
+
 use std::io::BufWriter;
 use syn::spanned::Spanned;
-use syn::Item;
 
 use std::{
     io::Write,
@@ -24,7 +21,7 @@ use crossbeam::channel::{select, Sender};
 
 use ignore::{DirEntry, ParallelVisitor, ParallelVisitorBuilder, Walk, WalkBuilder};
 use regex::Regex;
-use syn::__private::ToTokens;
+
 use syntect::{
     highlighting::{Color, FontStyle, Style, ThemeSet},
     parsing::{SyntaxReference, SyntaxSet},
@@ -32,7 +29,7 @@ use syntect::{
 };
 
 use util::parse_file;
-use util::print_header_info;
+
 use util::ParsedFile;
 
 use clap::Clap;
@@ -101,9 +98,7 @@ pub fn rustfmt(string: String) -> Result<String> {
     Ok(String::from_utf8_lossy(&output).into())
 }
 
-use crossterm::cursor;
 use crossterm::terminal;
-use crossterm::ExecutableCommand;
 
 struct TerminalPrinter {
     size: (u16, u16),
@@ -117,7 +112,7 @@ impl TerminalPrinter {
         Ok(Self {
             size: (x, y),
             output,
-            line: std::iter::repeat('-').take(x as _).collect(),
+            line: "-".repeat(x as _),
         })
     }
 }
@@ -128,8 +123,7 @@ impl Write for TerminalPrinter {
         match &self.output {
             Output::Stdout => {
                 let mut stdout = std::io::stdout();
-                let result = stdout.write(buf);
-                result
+                stdout.write(buf)
             }
             Output::Null => Ok(buf.len()),
         }
@@ -198,7 +192,6 @@ pub fn rgrok_dir_parallel(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Resu
 
     struct Visitor<'a> {
         tx: Sender<(ParsedFile, SyntaxReference)>,
-        quit: Sender<()>,
         ps: &'a SyntaxSet,
         re: &'a regex::Regex,
     }
@@ -228,24 +221,15 @@ pub fn rgrok_dir_parallel(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Resu
             }
         }
     }
-    impl<'a> Drop for Visitor<'a> {
-        fn drop(&mut self) {
-            self.quit.send(()).unwrap()
-        }
-    }
     struct VisitorBuilder<'a> {
         ps: &'a SyntaxSet,
         re: &'a regex::Regex,
         tx: Sender<(ParsedFile, SyntaxReference)>,
-        quit: Sender<()>,
-        thread_count: usize,
     }
     impl<'s> ParallelVisitorBuilder<'s> for VisitorBuilder<'s> {
         fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
-            self.thread_count += 1;
             Box::new(Visitor {
                 tx: self.tx.clone(),
-                quit: self.quit.clone(),
                 ps: self.ps,
                 re: self.re,
             })
@@ -253,34 +237,19 @@ pub fn rgrok_dir_parallel(mut args: Args, ps: &SyntaxSet, ts: &ThemeSet) -> Resu
     }
 
     let (tx, rx) = crossbeam::channel::unbounded::<(ParsedFile, SyntaxReference)>();
-    let (quit, done) = crossbeam::channel::unbounded::<()>();
-    let mut vbuilder = VisitorBuilder {
-        ps,
-        re: &args.regex,
-        tx,
-        quit,
-        thread_count: 0,
-    };
-    walker.visit(&mut vbuilder);
 
-    let mut threads_finished = 0;
-    loop {
-        select! {
-            recv(done) -> _ => {
-                threads_finished += 1;
-                if threads_finished == vbuilder.thread_count {
-                    break
-                }
-            }
-            recv(rx) -> msg => {
-                match msg {
-                    Ok((file, syntax)) => {
-                        grep_items(&mut args.output, &file, &args.regex, &syntax, ps, ts)
-                    },
-                    _ => panic!()
-                }
-            }
-        }
+    {
+        let mut vbuilder = VisitorBuilder {
+            ps,
+            re: &args.regex,
+            tx,
+        };
+        walker.visit(&mut vbuilder);
+        // Drop that vbuilder
+    }
+
+    while let Ok((file, syntax)) = rx.recv() {
+        grep_items(&mut args.output, &file, &args.regex, &syntax, ps, ts)
     }
 
     Ok(())
@@ -300,7 +269,7 @@ struct GrepResult {
 }
 
 lazy_static! {
-    static ref LINE_REGEX: regex::Regex = regex::RegexBuilder::new("(.*\r?\n)")
+    static ref LINE_REGEX: regex::Regex = regex::RegexBuilder::new("(.*\r?\n?)")
         .multi_line(true)
         .build()
         .unwrap();
@@ -318,73 +287,80 @@ pub fn grep_items<W: Compositor<Context = ((usize, usize), ItemType)>>(
         Ok(f) => syn_file = f,
         Err(_) => return,
     };
+    // Indexes for the starting byte offset for a given line.
+    // byte_spans[i]..byte_spans[i+1] = byte range for a line in a file.
     let mut byte_spans = vec![0usize];
     byte_spans.extend(LINE_REGEX.find_iter(&file.contents).scan(0, |acc, l| {
         *acc += l.as_str().len();
         Some(*acc)
     }));
-    let rx = {
-        let (tx, rx) = crossbeam::channel::unbounded();
-        use rayon::prelude::*;
-        syn_file
-            .items
-            .iter()
-            .map(|item| {
-                let span = item.span();
-                let (start, end) = (span.start().line, span.end().line);
-                let item_type = item_type(&item);
-                (item_type, (start, end))
-            })
-            .collect::<Vec<(ItemType, (usize, usize))>>()
-            .into_par_iter()
-            .for_each(|(t, (start, end))| {
-                let string = Vec::new();
-                let mut writer = std::io::BufWriter::new(string);
-                let num_skip: usize = byte_spans[start];
-                let end: usize = byte_spans[end];
-                let item = &file.contents[num_skip..end];
-                if re.is_match(item) {
-                    let mut h =
-                        syntect::easy::HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
-                    // Write highlighted strings to buffer.
-                    for line in LinesWithEndings::from(item) {
-                        let mut ranges: Vec<(Style, &str)> = h.highlight(line, ps);
-                        highlight_matches_in_line(&mut ranges, re.find_iter(line));
-                        let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
-                        write!(writer, "{}", escaped).unwrap();
+    assert_eq!(
+        byte_spans.last().unwrap(),
+        &file.contents.len(),
+        "{}",
+        file.dir_entry.path().display()
+    );
+    let (tx, rx) = crossbeam::channel::unbounded();
+    use rayon::prelude::*;
+    syn_file
+        .items
+        .iter()
+        .map(|item| {
+            let span = item.span();
+            let (start, end) = (span.start().line, span.end().line);
+            let item_type = item_type(item);
+            (item_type, (start, end))
+        })
+        .collect::<Vec<(ItemType, (usize, usize))>>()
+        .into_par_iter()
+        .for_each(|(t, (start, end))| {
+            let string = Vec::new();
+            let mut writer = std::io::BufWriter::new(string);
+            // println!("{} {} {}", file.dir_entry.path().display(), start, end);
+            let span_start: usize = byte_spans[start];
+            let span_end: usize = byte_spans[end];
+            let item = &file.contents[span_start..span_end];
+            if byte_spans.len() > 100 {
+                // TODO
+                for m in re.find_iter(item) {
+                    match byte_spans.binary_search(&m.start()) {
+                        Ok(_i) => {}  // The match is at a new line
+                        Err(_i) => {} // The match is somewhere in i - 1 (?)
                     }
-                    writeln!(writer, "\x1b[0m").unwrap();
-                    let grep_result = GrepResult {
-                        item_type: t,
-                        line_range: (start, end),
-                        writer,
-                    };
-                    tx.send(grep_result).unwrap();
                 }
-            });
-        rx
-    };
-    loop {
-        match rx.recv() {
-            Ok(GrepResult {
-                writer,
-                line_range,
-                item_type,
-            }) => {
-                let string = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-                output
-                    .write_with(format_args!("{}", string), (line_range, item_type))
-                    .unwrap();
-                // write!(
-                //     output,
-                //     "{}",
-                //     String::from_utf8(writer.into_inner().unwrap()).unwrap()
-                // )
-                // .unwrap();
-                output.flush().unwrap();
+            } else if re.is_match(item) {
+                let mut h =
+                    syntect::easy::HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
+                // Write highlighted strings to buffer.
+                for line in LinesWithEndings::from(item) {
+                    let mut ranges: Vec<(Style, &str)> = h.highlight(line, ps);
+                    highlight_matches_in_line(&mut ranges, re.find_iter(line));
+                    let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+                    write!(writer, "{}", escaped).unwrap();
+                }
+                writeln!(writer, "\x1b[0m").unwrap();
+                let grep_result = GrepResult {
+                    item_type: t,
+                    line_range: (start, end),
+                    writer,
+                };
+                tx.send(grep_result).unwrap();
             }
-            Err(_) => break,
-        }
+        });
+    // Drop the unused tx after sending them to rayon iters.
+    drop(tx);
+
+    while let Ok(GrepResult {
+        writer,
+        line_range,
+        item_type,
+    }) = rx.recv()
+    {
+        let string = String::from_utf8(writer.into_inner().unwrap()).unwrap();
+        output
+            .write_with(format_args!("{}", string), (line_range, item_type))
+            .unwrap();
+        output.flush().unwrap();
     }
 }
 

@@ -9,7 +9,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("rgrok");
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
-    group.sample_size(10);
+    group.sample_size(100);
     group.bench_with_input(
         BenchmarkId::new("single-thread", "Self"),
         &Args {
